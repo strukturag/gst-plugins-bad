@@ -142,6 +142,12 @@ else
 LV2_DIR =
 endif
 
+if USE_LIBDE265
+LIBDE265_DIR = libde265
+else
+LIBDE265_DIR =
+endif
+
 # if USE_LIBFAME
 # LIBFAME_DIR=libfame
 # else
@@ -421,6 +427,7 @@ SUBDIRS=\
 	$(KATE_DIR) \
 	$(LADSPA_DIR) \
 	$(LV2_DIR) \
+	$(LIBDE265_DIR) \
 	$(LIBFAME_DIR) \
 	$(LIBMMS_DIR) \
 	$(LIBVISUAL_DIR) \
@@ -480,6 +487,7 @@ DIST_SUBDIRS = \
 	hls \
 	ladspa \
 	kate \
+	libde265 \
 	libmms \
 	libvisual \
 	lv2 \

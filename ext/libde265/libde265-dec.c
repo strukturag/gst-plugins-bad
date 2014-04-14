@@ -54,14 +54,6 @@
                (((const uint8_t*)(x))[2] <<  8) |    \
                 ((const uint8_t*)(x))[3])
 
-#define WRITE_BE32(p, darg) do {                \
-        unsigned d = (darg);                    \
-        ((uint8_t*)(p))[3] = (d);               \
-        ((uint8_t*)(p))[2] = (d)>>8;            \
-        ((uint8_t*)(p))[1] = (d)>>16;           \
-        ((uint8_t*)(p))[0] = (d)>>24;           \
-    } while(0)
-
 #define parent_class gst_libde265_dec_parent_class
 G_DEFINE_TYPE (GstLibde265Dec, gst_libde265_dec, GST_TYPE_VIDEO_DECODER);
 

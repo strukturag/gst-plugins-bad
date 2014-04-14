@@ -293,11 +293,7 @@ gst_libde265_dec_flush (GstVideoDecoder * decoder)
 {
   GstLibde265Dec *dec = GST_LIBDE265_DEC (decoder);
 
-  // flush any pending decoded images
-  const struct de265_image *img;
-  do {
-    img = de265_get_next_picture (dec->ctx);
-  } while (img != NULL);
+  de265_reset (dec->ctx);
   dec->buffer_full = 0;
 
   return TRUE;
@@ -337,11 +333,8 @@ gst_libde265_dec_parse (GstVideoDecoder * decoder,
   GstLibde265Dec *dec = GST_LIBDE265_DEC (decoder);
   const struct de265_image *img;
   gsize size;
-  GstBuffer *buf;
-  uint8_t *frame_data;
-  uint8_t *end_data;
-  GstMapInfo info;
-  de265_error ret;
+  de265_error ret = DE265_OK;
+  de265_PTS pts = frame != NULL ? (de265_PTS) frame->pts : -1;
 
   if (dec->buffer_full) {
     // return any pending images before decoding more data
@@ -352,38 +345,49 @@ gst_libde265_dec_parse (GstVideoDecoder * decoder,
   }
 
   size = gst_adapter_available (adapter);
-  if (size == 0) {
-    return GST_VIDEO_DECODER_FLOW_NEED_DATA;
-  }
-
-  buf = gst_adapter_take_buffer (adapter, size);
-  if (!gst_buffer_map (buf, &info, GST_MAP_READWRITE)) {
-    return GST_FLOW_ERROR;
-  }
-
-  frame_data = info.data;
-  end_data = frame_data + size;
-
-  if (dec->mode == GST_TYPE_LIBDE265_DEC_PACKETIZED) {
-    // replace 4-byte length fields with NAL start codes
-    uint8_t *start_data = frame_data;
-    while (start_data + 4 <= end_data) {
-      int nal_size = READ_BE32 (start_data);
-      WRITE_BE32 (start_data, 0x00000001);
-      start_data += 4 + nal_size;
-    }
-    if (start_data > end_data) {
-      GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
-          ("Overflow in input data, check data mode"), (NULL));
+  if (size > 0) {
+    GstMapInfo info;
+    GstBuffer *buf = gst_adapter_take_buffer (adapter, size);
+    if (!gst_buffer_map (buf, &info, GST_MAP_READWRITE)) {
       return GST_FLOW_ERROR;
     }
+
+    if (dec->mode == GST_TYPE_LIBDE265_DEC_PACKETIZED) {
+      const uint8_t *start_data = info.data;
+      const uint8_t *end_data = info.data + size;
+      while (start_data + 4 <= end_data) {
+        int nal_size = READ_BE32 (start_data);
+        if (start_data + 4 > end_data) {
+          GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+              ("Overflow in input data, check data mode"), (NULL));
+          return GST_FLOW_ERROR;
+        }
+
+        ret = de265_push_NAL (dec->ctx, start_data + 4, nal_size, pts, NULL);
+        if (ret != DE265_OK) {
+          GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+              ("Error while pushing data: %s (code=%d)",
+                  de265_get_error_text (ret), ret), (NULL));
+          return GST_FLOW_ERROR;
+        }
+        start_data += 4 + nal_size;
+      }
+    } else {
+      ret = de265_push_data (dec->ctx, info.data, size, pts, NULL);
+    }
+
+    gst_buffer_unmap (buf, &info);
+    gst_buffer_unref (buf);
+  } else {
+    ret = de265_flush_data (dec->ctx);
   }
 
-  ret = de265_push_data (dec->ctx, frame_data, end_data - frame_data, 0, NULL);
-  gst_buffer_unmap (buf, &info);
-  gst_buffer_unref (buf);
   if (ret == DE265_OK) {
-    ret = de265_decode (dec->ctx, NULL);
+    int more = 0;
+    // decode as much as possible
+    do {
+      ret = de265_decode (dec->ctx, &more);
+    } while (more && ret == DE265_OK);
   }
   switch (ret) {
     case DE265_OK:
@@ -471,6 +475,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
     dest += (height * stride);
   }
   gst_buffer_unmap (frame->output_buffer, &info);
+  frame->pts = (GstClockTime) de265_get_image_PTS (img);
 
   return gst_video_decoder_finish_frame (decoder, frame);
 }

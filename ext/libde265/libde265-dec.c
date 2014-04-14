@@ -477,10 +477,19 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
 
   for (plane = 0; plane < 3; plane++) {
     int stride;
+    int width = de265_get_image_width (img, plane);
     int height = de265_get_image_height (img, plane);
     const uint8_t *src = de265_get_image_plane (img, plane, &stride);
-    memcpy (dest, src, height * stride);
-    dest += (height * stride);
+    if (stride == width) {
+      memcpy (dest, src, height * stride);
+      dest += (height * stride);
+    } else {
+      while (height--) {
+        memcpy (dest, src, width);
+        src += stride;
+        dest += width;
+      }
+    }
   }
   gst_buffer_unmap (frame->output_buffer, &info);
   frame->pts = (GstClockTime) de265_get_image_PTS (img);

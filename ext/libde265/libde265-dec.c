@@ -348,7 +348,11 @@ gst_libde265_dec_parse (GstVideoDecoder * decoder,
   if (size > 0) {
     GstMapInfo info;
     GstBuffer *buf = gst_adapter_take_buffer (adapter, size);
+    if (buf == NULL) {
+      return GST_FLOW_ERROR;
+    }
     if (!gst_buffer_map (buf, &info, GST_MAP_READWRITE)) {
+      gst_buffer_unref (buf);
       return GST_FLOW_ERROR;
     }
 
@@ -358,6 +362,8 @@ gst_libde265_dec_parse (GstVideoDecoder * decoder,
       while (start_data + 4 <= end_data) {
         int nal_size = READ_BE32 (start_data);
         if (start_data + 4 > end_data) {
+          gst_buffer_unmap (buf, &info);
+          gst_buffer_unref (buf);
           GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
               ("Overflow in input data, check data mode"), (NULL));
           return GST_FLOW_ERROR;
@@ -365,6 +371,8 @@ gst_libde265_dec_parse (GstVideoDecoder * decoder,
 
         ret = de265_push_NAL (dec->ctx, start_data + 4, nal_size, pts, NULL);
         if (ret != DE265_OK) {
+          gst_buffer_unmap (buf, &info);
+          gst_buffer_unref (buf);
           GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
               ("Error while pushing data: %s (code=%d)",
                   de265_get_error_text (ret), ret), (NULL));

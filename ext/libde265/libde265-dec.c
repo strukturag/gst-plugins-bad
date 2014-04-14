@@ -272,7 +272,8 @@ gst_libde265_dec_start (GstVideoDecoder * decoder)
     threads = 32;
   }
   de265_start_worker_threads (dec->ctx, threads);
-  GST_INFO ("Starting %d worker threads\n", threads);
+  GST_INFO ("Using libde265 %s with %d worker threads\n", de265_get_version (),
+      threads);
 
   return TRUE;
 }

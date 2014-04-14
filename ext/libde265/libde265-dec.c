@@ -263,7 +263,14 @@ gst_libde265_dec_start (GstVideoDecoder * decoder)
   if (threads <= 0) {
     threads = DEFAULT_THREAD_COUNT;
   }
-
+  // NOTE: We start more threads than cores for now, as some threads
+  // might get blocked while waiting for dependent data. Having more
+  // threads increases decoding speed by about 10%
+  threads *= 2;
+  if (threads > 32) {
+    // TODO: this limit should come from the libde265 headers
+    threads = 32;
+  }
   de265_start_worker_threads (dec->ctx, threads);
   GST_INFO ("Starting %d worker threads\n", threads);
 

@@ -44,10 +44,6 @@
 
 #include "libde265-dec.h"
 
-#if defined(LIBDE265_NUMERIC_VERSION) && LIBDE265_NUMERIC_VERSION >= 0x00050000
-#define HAVE_DE265_ERROR_WAITING_FOR_INPUT_DATA
-#endif
-
 // use two decoder threads if no information about
 // available CPU cores can be retrieved
 #define DEFAULT_THREAD_COUNT        2
@@ -399,10 +395,10 @@ gst_libde265_dec_parse (GstVideoDecoder * decoder,
         return GST_VIDEO_DECODER_FLOW_NEED_DATA;
       }
       return _gst_libde265_image_available (decoder, img);
-#ifdef HAVE_DE265_ERROR_WAITING_FOR_INPUT_DATA
+
     case DE265_ERROR_WAITING_FOR_INPUT_DATA:
       return GST_VIDEO_DECODER_FLOW_NEED_DATA;
-#endif
+
     default:
       GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
           ("Error while decoding: %s (code=%d)", de265_get_error_text (ret),

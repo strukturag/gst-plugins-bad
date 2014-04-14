@@ -23,8 +23,6 @@
 #include "config.h"
 #endif
 
-#include <libde265/de265.h>
-
 #include "libde265-dec.h"
 
 static gboolean
@@ -32,7 +30,6 @@ plugin_init (GstPlugin * plugin)
 {
   gboolean ret;
 
-  de265_init ();
   ret = gst_libde265_dec_plugin_init (plugin);
   return ret;
 }

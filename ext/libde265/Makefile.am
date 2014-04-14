@@ -4,7 +4,8 @@ libgstlibde265_la_SOURCES = \
 	gstlibde265.c \
 	libde265-dec.c
 
-libgstlibde265_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) $(GST_CFLAGS)
+libgstlibde265_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) $(GST_CFLAGS) \
+	$(LIBDE265_CFLAGS)
 libgstlibde265_la_LIBADD = $(GST_PLUGINS_BASE_LIBS) $(GST_BASE_LIBS) $(GST_LIBS) -lgstvideo-$(GST_API_VERSION) \
 	$(LIBDE265_LIBS)
 libgstlibde265_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS)

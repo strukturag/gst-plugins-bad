@@ -351,7 +351,7 @@ gst_libde265_dec_parse (GstVideoDecoder * decoder,
     if (buf == NULL) {
       return GST_FLOW_ERROR;
     }
-    if (!gst_buffer_map (buf, &info, GST_MAP_READWRITE)) {
+    if (!gst_buffer_map (buf, &info, GST_MAP_READ)) {
       gst_buffer_unref (buf);
       return GST_FLOW_ERROR;
     }

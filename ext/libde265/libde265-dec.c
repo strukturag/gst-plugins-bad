@@ -37,6 +37,7 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -44,15 +45,13 @@
 
 #include "libde265-dec.h"
 
+#if !defined(LIBDE265_NUMERIC_VERSION) || LIBDE265_NUMERIC_VERSION < 0x00080000
+#error "You need libde265 0.8 or newer to compile this plugin."
+#endif
+
 // use two decoder threads if no information about
 // available CPU cores can be retrieved
 #define DEFAULT_THREAD_COUNT        2
-
-#define READ_BE32(x)                                 \
-    (((uint32_t)((const uint8_t*)(x))[0] << 24) |    \
-               (((const uint8_t*)(x))[1] << 16) |    \
-               (((const uint8_t*)(x))[2] <<  8) |    \
-                ((const uint8_t*)(x))[3])
 
 #define parent_class gst_libde265_dec_parent_class
 G_DEFINE_TYPE (GstLibde265Dec, gst_libde265_dec, GST_TYPE_VIDEO_DECODER);
@@ -111,13 +110,13 @@ static void gst_libde265_dec_get_property (GObject * object, guint prop_id,
 
 static gboolean gst_libde265_dec_start (GstVideoDecoder * decoder);
 static gboolean gst_libde265_dec_stop (GstVideoDecoder * decoder);
-static GstFlowReturn gst_libde265_dec_parse (GstVideoDecoder * decoder,
-    GstVideoCodecFrame * frame, GstAdapter * adapter, gboolean at_eos);
 static gboolean gst_libde265_dec_set_format (GstVideoDecoder * decoder,
     GstVideoCodecState * state);
 static gboolean gst_libde265_dec_flush (GstVideoDecoder * decoder);
 static GstFlowReturn gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
     GstVideoCodecFrame * frame);
+static GstFlowReturn _gst_libde265_image_available (GstVideoDecoder * decoder,
+    int width, int height);
 
 static void
 gst_libde265_dec_class_init (GstLibde265DecClass * klass)
@@ -142,7 +141,6 @@ gst_libde265_dec_class_init (GstLibde265DecClass * klass)
 
   decoder_class->start = GST_DEBUG_FUNCPTR (gst_libde265_dec_start);
   decoder_class->stop = GST_DEBUG_FUNCPTR (gst_libde265_dec_stop);
-  decoder_class->parse = GST_DEBUG_FUNCPTR (gst_libde265_dec_parse);
   decoder_class->set_format = GST_DEBUG_FUNCPTR (gst_libde265_dec_set_format);
   decoder_class->flush = GST_DEBUG_FUNCPTR (gst_libde265_dec_flush);
   decoder_class->handle_frame =
@@ -155,7 +153,7 @@ gst_libde265_dec_class_init (GstLibde265DecClass * klass)
 
   gst_element_class_set_static_metadata (gstelement_class,
       "HEVC/H.265 parser",
-      "Codec/Decoder/Video",
+      "Codec/Parser/Converter/Video",
       "Decodes HEVC/H.265 video streams using libde265",
       "struktur AG <opensource@struktur.de>");
 }
@@ -167,7 +165,11 @@ _gst_libde265_dec_reset_decoder (GstLibde265Dec * dec)
   dec->width = -1;
   dec->height = -1;
   dec->buffer_full = 0;
+  dec->codec_data = NULL;
+  dec->codec_data_size = 0;
+  dec->frame_number = -1;
   dec->input_state = NULL;
+  dec->output_state = NULL;
 }
 
 static void
@@ -176,8 +178,9 @@ gst_libde265_dec_init (GstLibde265Dec * dec)
   dec->mode = DEFAULT_MODE;
   dec->fps_n = DEFAULT_FPS_N;
   dec->fps_d = DEFAULT_FPS_D;
+  dec->length_size = 4;
   _gst_libde265_dec_reset_decoder (dec);
-  gst_video_decoder_set_packetized (GST_VIDEO_DECODER (dec), FALSE);
+  gst_video_decoder_set_packetized (GST_VIDEO_DECODER (dec), TRUE);
 }
 
 static inline void
@@ -186,8 +189,12 @@ _gst_libde265_dec_free_decoder (GstLibde265Dec * dec)
   if (dec->ctx != NULL) {
     de265_free_decoder (dec->ctx);
   }
+  free (dec->codec_data);
   if (dec->input_state != NULL) {
     gst_video_codec_state_unref (dec->input_state);
+  }
+  if (dec->output_state != NULL) {
+    gst_video_codec_state_unref (dec->output_state);
   }
   _gst_libde265_dec_reset_decoder (dec);
 }
@@ -211,12 +218,12 @@ gst_libde265_dec_set_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_MODE:
       dec->mode = g_value_get_enum (value);
-      GST_DEBUG ("Mode set to %d\n", dec->mode);
+      GST_DEBUG ("Mode set to %d", dec->mode);
       break;
     case PROP_FRAMERATE:
       dec->fps_n = gst_value_get_fraction_numerator (value);
       dec->fps_d = gst_value_get_fraction_denominator (value);
-      GST_DEBUG ("Framerate set to %d/%d\n", dec->fps_n, dec->fps_d);
+      GST_DEBUG ("Framerate set to %d/%d", dec->fps_n, dec->fps_d);
       break;
     default:
       break;
@@ -241,11 +248,149 @@ gst_libde265_dec_get_property (GObject * object, guint prop_id,
   }
 }
 
+struct GstLibde265FrameRef
+{
+  GstVideoDecoder *decoder;
+  GstVideoCodecFrame *frame;
+  GstVideoFrame vframe;
+  GstBuffer *buffer;
+  int mapped;
+};
+
+static void
+gst_libde265_dec_release_frame_ref (struct GstLibde265FrameRef *ref)
+{
+  if (ref->mapped) {
+    gst_video_frame_unmap (&ref->vframe);
+  }
+  gst_video_codec_frame_unref (ref->frame);
+  gst_buffer_replace (&ref->buffer, NULL);
+  free (ref);
+}
+
+static int
+gst_libde265_dec_get_buffer (de265_decoder_context * ctx,
+    struct de265_image_spec *spec, struct de265_image *img, void *userdata)
+{
+  GstVideoDecoder *base = (GstVideoDecoder *) userdata;
+  GstLibde265Dec *dec = GST_LIBDE265_DEC (base);
+  GstVideoCodecFrame *frame;
+  int i;
+  int width = spec->width;
+  int height = spec->height;
+  GstFlowReturn ret;
+  struct GstLibde265FrameRef *ref;
+  GstVideoInfo *info;
+
+  frame = gst_video_decoder_get_frame (base, dec->frame_number);
+  if (G_UNLIKELY (frame == NULL)) {
+    // should not happen...
+    GST_WARNING_OBJECT (base, "Couldn't get codec frame !");
+    goto fallback;
+  }
+
+  GST_VIDEO_CODEC_FRAME_FLAG_UNSET (frame,
+      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
+
+  if (width % spec->alignment) {
+    width += spec->alignment - (width % spec->alignment);
+  }
+  if (width != spec->visible_width || height != spec->visible_height) {
+    // clipping not supported for now
+    goto fallback;
+  }
+
+  ret = _gst_libde265_image_available (base, width, height);
+  if (G_UNLIKELY (ret != GST_FLOW_OK)) {
+    GST_ERROR_OBJECT (dec, "Failed to notify about available image");
+    goto fallback;
+  }
+
+  ret =
+      gst_video_decoder_allocate_output_frame (GST_VIDEO_DECODER (dec), frame);
+  if (G_UNLIKELY (ret != GST_FLOW_OK)) {
+    GST_ERROR_OBJECT (dec, "Failed to allocate output buffer");
+    goto fallback;
+  }
+
+  ref = (struct GstLibde265FrameRef *) calloc (1, sizeof (*ref));
+  g_assert (ref != NULL);
+  ref->decoder = base;
+  ref->frame = frame;
+
+  gst_buffer_replace (&ref->buffer, frame->output_buffer);
+  gst_buffer_replace (&frame->output_buffer, NULL);
+
+  info = &dec->output_state->info;
+  if (!gst_video_frame_map (&ref->vframe, info, ref->buffer, GST_MAP_READWRITE)) {
+    GST_ERROR_OBJECT (dec, "Failed to map frame output buffer");
+    goto error;
+  }
+
+  ref->mapped = TRUE;
+  if (GST_VIDEO_FRAME_PLANE_STRIDE (&ref->vframe,
+          0) < width * GST_VIDEO_FRAME_COMP_PSTRIDE (&ref->vframe, 0)) {
+    GST_DEBUG_OBJECT (dec, "plane 0: pitch too small (%d/%d*%d)",
+        GST_VIDEO_FRAME_PLANE_STRIDE (&ref->vframe, 0), width,
+        GST_VIDEO_FRAME_COMP_PSTRIDE (&ref->vframe, 0));
+    goto error;
+  }
+
+  if (GST_VIDEO_FRAME_COMP_HEIGHT (&ref->vframe, 0) < height) {
+    GST_DEBUG_OBJECT (dec, "plane 0: lines too few (%d/%d)",
+        GST_VIDEO_FRAME_COMP_HEIGHT (&ref->vframe, 0), height);
+    goto error;
+  }
+
+  for (i = 0; i < 3; i++) {
+    uint8_t *data;
+    int stride = GST_VIDEO_FRAME_PLANE_STRIDE (&ref->vframe, i);
+    if (stride % spec->alignment) {
+      GST_DEBUG_OBJECT (dec, "plane %d: pitch not aligned (%d%%%d)",
+          i, stride, spec->alignment);
+      goto error;
+    }
+
+    data = GST_VIDEO_FRAME_PLANE_DATA (&ref->vframe, i);
+    if ((uintptr_t) (data) % spec->alignment) {
+      GST_DEBUG_OBJECT (dec, "plane %d not aligned", i);
+      goto error;
+    }
+
+    de265_set_image_plane (img, i, data, stride, ref);
+  }
+  return 1;
+
+error:
+  gst_libde265_dec_release_frame_ref (ref);
+
+fallback:
+  return de265_get_default_image_allocation_functions ()->get_buffer (ctx,
+      spec, img, userdata);
+}
+
+static void
+gst_libde265_dec_release_buffer (de265_decoder_context * ctx,
+    struct de265_image *img, void *userdata)
+{
+  GstVideoDecoder *base = (GstVideoDecoder *) userdata;
+  struct GstLibde265FrameRef *ref =
+      (struct GstLibde265FrameRef *) de265_get_image_plane_user_data (img, 0);
+  if (ref == NULL) {
+    de265_get_default_image_allocation_functions ()->release_buffer (ctx, img,
+        userdata);
+    return;
+  }
+  gst_libde265_dec_release_frame_ref (ref);
+  (void) base;                  // unused
+}
+
 static gboolean
 gst_libde265_dec_start (GstVideoDecoder * decoder)
 {
   int threads;
   GstLibde265Dec *dec = GST_LIBDE265_DEC (decoder);
+  struct de265_image_allocation allocation;
 
   _gst_libde265_dec_free_decoder (dec);
   dec->ctx = de265_new_decoder ();
@@ -272,9 +417,15 @@ gst_libde265_dec_start (GstVideoDecoder * decoder)
     threads = 32;
   }
   de265_start_worker_threads (dec->ctx, threads);
-  GST_INFO ("Using libde265 %s with %d worker threads\n", de265_get_version (),
+  GST_INFO ("Using libde265 %s with %d worker threads", de265_get_version (),
       threads);
 
+  allocation.get_buffer = gst_libde265_dec_get_buffer;
+  allocation.release_buffer = gst_libde265_dec_release_buffer;
+  de265_set_image_allocation_functions (dec->ctx, &allocation, decoder);
+  // NOTE: we explicitly disable hash checks for now
+  de265_set_parameter_bool (dec->ctx, DE265_DECODER_PARAM_BOOL_SEI_CHECK_HASH,
+      0);
   return TRUE;
 }
 
@@ -295,140 +446,76 @@ gst_libde265_dec_flush (GstVideoDecoder * decoder)
 
   de265_reset (dec->ctx);
   dec->buffer_full = 0;
+  if (dec->codec_data != NULL && dec->mode == GST_TYPE_LIBDE265_DEC_RAW) {
+    int more;
+    de265_error err =
+        de265_push_data (dec->ctx, dec->codec_data, dec->codec_data_size, 0,
+        NULL);
+    if (!de265_isOK (err)) {
+      GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+          ("Failed to push codec data: %s (code=%d)",
+              de265_get_error_text (err), err), (NULL));
+      return FALSE;
+    }
+    de265_push_end_of_NAL (dec->ctx);
+    do {
+      err = de265_decode (dec->ctx, &more);
+      switch (err) {
+        case DE265_OK:
+          break;
+
+        case DE265_ERROR_IMAGE_BUFFER_FULL:
+        case DE265_ERROR_WAITING_FOR_INPUT_DATA:
+          // not really an error
+          more = 0;
+          break;
+
+        default:
+          if (!de265_isOK (err)) {
+            GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+                ("Failed to decode codec data: %s (code=%d)",
+                    de265_get_error_text (err), err), (NULL));
+            return FALSE;
+          }
+      }
+    } while (more);
+  }
 
   return TRUE;
 }
 
 static GstFlowReturn
-_gst_libde265_image_available (GstVideoDecoder * decoder,
-    const struct de265_image *image)
+_gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
 {
   GstLibde265Dec *dec = GST_LIBDE265_DEC (decoder);
-  int width = de265_get_image_width (image, 0);
-  int height = de265_get_image_height (image, 0);
 
   if (G_UNLIKELY (width != dec->width || height != dec->height)) {
     GstVideoCodecState *state =
         gst_video_decoder_set_output_state (decoder, GST_VIDEO_FORMAT_I420,
-        width,
-        height, dec->input_state);
+        width, height, dec->input_state);
     g_assert (state != NULL);
     if (dec->fps_n > 0) {
       state->info.fps_n = dec->fps_n;
       state->info.fps_d = dec->fps_d;
+    } else if (state->info.fps_d == 0
+        || (state->info.fps_n / (float) state->info.fps_d) > 1000) {
+      // TODO(fancycode): is 24/1 a sane default or can we get it from the container somehow?
+      GST_WARNING ("Framerate is too high (%d/%d), defaulting to 24/1",
+          state->info.fps_n, state->info.fps_d);
+      state->info.fps_n = 24;
+      state->info.fps_d = 1;
     }
     gst_video_decoder_negotiate (decoder);
-    GST_DEBUG ("Frame dimensions are %d x %d\n", width, height);
+    if (dec->output_state != NULL) {
+      gst_video_codec_state_unref (dec->output_state);
+    }
+    dec->output_state = state;
+    GST_DEBUG ("Frame dimensions are %d x %d", width, height);
     dec->width = width;
     dec->height = height;
   }
 
-  return gst_video_decoder_have_frame (decoder);
-}
-
-static GstFlowReturn
-gst_libde265_dec_parse (GstVideoDecoder * decoder,
-    GstVideoCodecFrame * frame, GstAdapter * adapter, gboolean at_eos)
-{
-  GstLibde265Dec *dec = GST_LIBDE265_DEC (decoder);
-  const struct de265_image *img;
-  gsize size;
-  de265_error ret = DE265_OK;
-  de265_PTS pts = frame != NULL ? (de265_PTS) frame->pts : -1;
-
-  if (dec->buffer_full) {
-    // return any pending images before decoding more data
-    if ((img = de265_peek_next_picture (dec->ctx)) != NULL) {
-      return _gst_libde265_image_available (decoder, img);
-    }
-    dec->buffer_full = 0;
-  }
-
-  size = gst_adapter_available (adapter);
-  if (size > 0) {
-    GstMapInfo info;
-    GstBuffer *buf = gst_adapter_take_buffer (adapter, size);
-    if (buf == NULL) {
-      return GST_FLOW_ERROR;
-    }
-    if (!gst_buffer_map (buf, &info, GST_MAP_READ)) {
-      gst_buffer_unref (buf);
-      return GST_FLOW_ERROR;
-    }
-
-    if (dec->mode == GST_TYPE_LIBDE265_DEC_PACKETIZED) {
-      const uint8_t *start_data = info.data;
-      const uint8_t *end_data = info.data + size;
-      while (start_data + 4 <= end_data) {
-        int nal_size = READ_BE32 (start_data);
-        if (start_data + 4 > end_data) {
-          gst_buffer_unmap (buf, &info);
-          gst_buffer_unref (buf);
-          GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
-              ("Overflow in input data, check data mode"), (NULL));
-          return GST_FLOW_ERROR;
-        }
-
-        ret = de265_push_NAL (dec->ctx, start_data + 4, nal_size, pts, NULL);
-        if (ret != DE265_OK) {
-          gst_buffer_unmap (buf, &info);
-          gst_buffer_unref (buf);
-          GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
-              ("Error while pushing data: %s (code=%d)",
-                  de265_get_error_text (ret), ret), (NULL));
-          return GST_FLOW_ERROR;
-        }
-        start_data += 4 + nal_size;
-      }
-    } else {
-      ret = de265_push_data (dec->ctx, info.data, size, pts, NULL);
-    }
-
-    gst_buffer_unmap (buf, &info);
-    gst_buffer_unref (buf);
-  } else {
-    ret = de265_flush_data (dec->ctx);
-  }
-
-  if (ret == DE265_OK) {
-    int more = 0;
-    // decode as much as possible
-    do {
-      ret = de265_decode (dec->ctx, &more);
-    } while (more && ret == DE265_OK);
-  }
-  switch (ret) {
-    case DE265_OK:
-      break;
-
-    case DE265_ERROR_IMAGE_BUFFER_FULL:
-      dec->buffer_full = 1;
-      if ((img = de265_peek_next_picture (dec->ctx)) == NULL) {
-        return GST_VIDEO_DECODER_FLOW_NEED_DATA;
-      }
-      return _gst_libde265_image_available (decoder, img);
-
-    case DE265_ERROR_WAITING_FOR_INPUT_DATA:
-      return GST_VIDEO_DECODER_FLOW_NEED_DATA;
-
-    default:
-      GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
-          ("Error while decoding: %s (code=%d)", de265_get_error_text (ret),
-              ret), (NULL));
-      return GST_FLOW_ERROR;
-  }
-
-  while ((ret = de265_get_warning (dec->ctx)) != DE265_OK) {
-    GST_ELEMENT_WARNING (decoder, STREAM, DECODE,
-        ("%s (code=%d)", de265_get_error_text (ret), ret), (NULL));
-  }
-
-  if ((img = de265_peek_next_picture (dec->ctx)) == NULL) {
-    // need more data
-    return GST_VIDEO_DECODER_FLOW_NEED_DATA;
-  }
-
-  return _gst_libde265_image_available (decoder, img);
+  return GST_FLOW_OK;
 }
 
 static gboolean
@@ -444,6 +531,130 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
   if (state != NULL) {
     gst_video_codec_state_ref (state);
   }
+  if (state != NULL && state->caps != NULL) {
+    GstStructure *str;
+    const GValue *value;
+    str = gst_caps_get_structure (state->caps, 0);
+    if ((value = gst_structure_get_value (str, "codec_data"))) {
+      GstMapInfo info;
+      guint8 *data;
+      gsize size;
+      GstBuffer *buf;
+      de265_error err;
+      int more;
+
+      buf = gst_value_get_buffer (value);
+      if (!gst_buffer_map (buf, &info, GST_MAP_READ)) {
+        GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+            ("Failed to map codec data"), (NULL));
+        return FALSE;
+      }
+      data = info.data;
+      size = info.size;
+      free (dec->codec_data);
+      dec->codec_data = malloc (size);
+      g_assert (dec->codec_data != NULL);
+      dec->codec_data_size = size;
+      memcpy (dec->codec_data, data, size);
+      if (size > 3 && (data[0] || data[1] || data[2] > 1)) {
+        // encoded in "hvcC" format (assume version 0)
+        dec->mode = GST_TYPE_LIBDE265_DEC_PACKETIZED;
+        if (size > 22) {
+          int i;
+          int num_param_sets;
+          int pos;
+          if (data[0] != 0) {
+            GST_ELEMENT_WARNING (decoder, STREAM,
+                DECODE, ("Unsupported extra data version %d, decoding may fail",
+                    data[0]), (NULL));
+          }
+          dec->length_size = (data[21] & 3) + 1;
+          num_param_sets = data[22];
+          pos = 23;
+          for (i = 0; i < num_param_sets; i++) {
+            int j;
+            int nal_count;
+            if (pos + 3 > size) {
+              GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+                  ("Buffer underrun in extra header (%d >= %ld)", pos + 3,
+                      size), (NULL));
+              return FALSE;
+            }
+            // ignore flags + NAL type (1 byte)
+            nal_count = data[pos + 1] << 8 | data[pos + 2];
+            pos += 3;
+            for (j = 0; j < nal_count; j++) {
+              int nal_size;
+              if (pos + 2 > size) {
+                GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+                    ("Buffer underrun in extra nal header (%d >= %ld)", pos + 2,
+                        size), (NULL));
+                return FALSE;
+              }
+              nal_size = data[pos] << 8 | data[pos + 1];
+              if (pos + 2 + nal_size > size) {
+                GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+                    ("Buffer underrun in extra nal (%d >= %ld)",
+                        pos + 2 + nal_size, size), (NULL));
+                return FALSE;
+              }
+              err =
+                  de265_push_NAL (dec->ctx, data + pos + 2, nal_size, 0, NULL);
+              if (!de265_isOK (err)) {
+                GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+                    ("Failed to push data: %s (%d)", de265_get_error_text (err),
+                        err), (NULL));
+                return FALSE;
+              }
+              pos += 2 + nal_size;
+            }
+          }
+        }
+        GST_DEBUG ("Assuming packetized data (%d bytes length)",
+            dec->length_size);
+      } else {
+        dec->mode = GST_TYPE_LIBDE265_DEC_RAW;
+        GST_DEBUG ("Assuming non-packetized data");
+        err = de265_push_data (dec->ctx, data, size, 0, NULL);
+        if (!de265_isOK (err)) {
+          gst_buffer_unmap (buf, &info);
+          GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+              ("Failed to push codec data: %s (code=%d)",
+                  de265_get_error_text (err), err), (NULL));
+          return FALSE;
+        }
+      }
+      gst_buffer_unmap (buf, &info);
+      de265_push_end_of_NAL (dec->ctx);
+      do {
+        err = de265_decode (dec->ctx, &more);
+        switch (err) {
+          case DE265_OK:
+            break;
+
+          case DE265_ERROR_IMAGE_BUFFER_FULL:
+          case DE265_ERROR_WAITING_FOR_INPUT_DATA:
+            // not really an error
+            more = 0;
+            break;
+
+          default:
+            if (!de265_isOK (err)) {
+              GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+                  ("Failed to decode codec data: %s (code=%d)",
+                      de265_get_error_text (err), err), (NULL));
+              return FALSE;
+            }
+        }
+      } while (more);
+    } else if ((value = gst_structure_get_value (str, "stream-format"))) {
+      const gchar *str = g_value_get_string (value);
+      if (strcmp (str, "byte-stream") == 0) {
+        dec->mode = GST_TYPE_LIBDE265_DEC_RAW;
+        GST_DEBUG ("Assuming raw byte-stream");
+      }
+    }
+  }
 
   return TRUE;
 }
@@ -452,30 +663,147 @@ static GstFlowReturn
 gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
     GstVideoCodecFrame * frame)
 {
-  GstFlowReturn ret = GST_FLOW_OK;
   GstLibde265Dec *dec = GST_LIBDE265_DEC (decoder);
+  uint8_t *frame_data;
+  uint8_t *end_data;
+  const struct de265_image *img;
+  de265_error ret = DE265_OK;
+  int more = 0;
+  de265_PTS pts = (de265_PTS) frame->pts;
+  gsize size;
+  struct GstLibde265FrameRef *ref;
+  GstFlowReturn result;
   uint8_t *dest;
-  GstMapInfo info;
-  int plane;
 
-  const struct de265_image *img = de265_get_next_picture (dec->ctx);
+  GstMapInfo info;
+  if (!gst_buffer_map (frame->input_buffer, &info, GST_MAP_READ)) {
+    GST_ERROR_OBJECT (dec, "Failed to map input buffer");
+    return GST_FLOW_ERROR;
+  }
+
+  frame_data = info.data;
+  size = info.size;
+  end_data = frame_data + size;
+
+  GST_VIDEO_CODEC_FRAME_FLAG_SET (frame,
+      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
+  if (size > 0) {
+    if (dec->mode == GST_TYPE_LIBDE265_DEC_PACKETIZED) {
+      // stream contains length fields and NALs
+      uint8_t *start_data = frame_data;
+      while (start_data + dec->length_size <= end_data) {
+        int nal_size = 0;
+        int i;
+        for (i = 0; i < dec->length_size; i++) {
+          nal_size = (nal_size << 8) | start_data[i];
+        }
+        if (start_data + dec->length_size + nal_size > end_data) {
+          GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+              ("Overflow in input data, check data mode"), (NULL));
+          goto error_input;
+        }
+        ret =
+            de265_push_NAL (dec->ctx, start_data + dec->length_size, nal_size,
+            pts, NULL);
+        if (ret != DE265_OK) {
+          GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+              ("Error while pushing data: %s (code=%d)",
+                  de265_get_error_text (ret), ret), (NULL));
+          goto error_input;
+        }
+        start_data += dec->length_size + nal_size;
+      }
+    } else {
+      ret = de265_push_data (dec->ctx, frame_data, size, pts, NULL);
+      if (ret != DE265_OK) {
+        GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+            ("Error while pushing data: %s (code=%d)",
+                de265_get_error_text (ret), ret), (NULL));
+        goto error_input;
+      }
+    }
+  } else {
+    ret = de265_flush_data (dec->ctx);
+    if (ret != DE265_OK) {
+      GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+          ("Error while flushing data: %s (code=%d)",
+              de265_get_error_text (ret), ret), (NULL));
+      return GST_FLOW_ERROR;
+    }
+  }
+  gst_buffer_unmap (frame->input_buffer, &info);
+
+  // decode as much as possible
+  dec->frame_number = frame->system_frame_number;
+  do {
+    ret = de265_decode (dec->ctx, &more);
+  } while (more && ret == DE265_OK);
+
+  switch (ret) {
+    case DE265_OK:
+    case DE265_ERROR_WAITING_FOR_INPUT_DATA:
+      break;
+
+    case DE265_ERROR_IMAGE_BUFFER_FULL:
+      dec->buffer_full = 1;
+      if ((img = de265_peek_next_picture (dec->ctx)) == NULL) {
+        return GST_FLOW_OK;
+      }
+      break;
+
+    default:
+      GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
+          ("Error while decoding: %s (code=%d)", de265_get_error_text (ret),
+              ret), (NULL));
+      return GST_FLOW_ERROR;
+  }
+
+  while ((ret = de265_get_warning (dec->ctx)) != DE265_OK) {
+    GST_ELEMENT_WARNING (decoder, STREAM, DECODE,
+        ("%s (code=%d)", de265_get_error_text (ret), ret), (NULL));
+  }
+
+  img = de265_get_next_picture (dec->ctx);
   if (img == NULL) {
     // need more data
     return GST_FLOW_OK;
   }
+  ref = (struct GstLibde265FrameRef *) de265_get_image_plane_user_data (img, 0);
+  if (ref != NULL) {
+    // decoder is using direct rendering
+    GstVideoCodecFrame *out_frame;
+    gst_video_codec_frame_unref (frame);
+    out_frame = gst_video_codec_frame_ref (ref->frame);
+    gst_buffer_replace (&out_frame->output_buffer, ref->buffer);
+    gst_buffer_replace (&ref->buffer, NULL);
+    out_frame->pts = (GstClockTime) de265_get_image_PTS (img);
+    return gst_video_decoder_finish_frame (decoder, out_frame);
+  }
 
-  ret = gst_video_decoder_allocate_output_frame (decoder, frame);
-  if (ret != GST_FLOW_OK) {
-    return ret;
+  GST_VIDEO_CODEC_FRAME_FLAG_UNSET (frame,
+      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
+
+  result =
+      _gst_libde265_image_available (decoder, de265_get_image_width (img, 0),
+      de265_get_image_height (img, 0));
+  if (result != GST_FLOW_OK) {
+    GST_ERROR_OBJECT (dec, "Failed to notify about available image");
+    return result;
+  }
+
+  result = gst_video_decoder_allocate_output_frame (decoder, frame);
+  if (result != GST_FLOW_OK) {
+    GST_ERROR_OBJECT (dec, "Failed to allocate output frame");
+    return result;
   }
 
   if (!gst_buffer_map (frame->output_buffer, &info, GST_MAP_WRITE)) {
+    GST_ERROR_OBJECT (dec, "Failed to map output buffer");
     return GST_FLOW_ERROR;
   }
 
   dest = info.data;
-
-  for (plane = 0; plane < 3; plane++) {
+  for (int plane = 0; plane < 3; plane++) {
     int stride;
     int width = de265_get_image_width (img, plane);
     int height = de265_get_image_height (img, plane);
@@ -493,8 +821,11 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
   }
   gst_buffer_unmap (frame->output_buffer, &info);
   frame->pts = (GstClockTime) de265_get_image_PTS (img);
-
   return gst_video_decoder_finish_frame (decoder, frame);
+
+error_input:
+  gst_buffer_unmap (frame->input_buffer, &info);
+  return GST_FLOW_ERROR;
 }
 
 gboolean

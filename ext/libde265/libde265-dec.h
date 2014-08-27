@@ -49,10 +49,15 @@ typedef struct _GstLibde265Dec
   int width;
   int height;
   GstLibde265DecMode mode;
+  int length_size;
   int fps_n;
   int fps_d;
   int buffer_full;
+  void *codec_data;
+  int codec_data_size;
+  int frame_number;
   GstVideoCodecState *input_state;
+  GstVideoCodecState *output_state;
 } GstLibde265Dec;
 
 typedef struct _GstLibde265DecClass

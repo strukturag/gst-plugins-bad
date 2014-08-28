@@ -250,7 +250,7 @@ struct GstLibde265FrameRef
   GstVideoCodecFrame *frame;
   GstVideoFrame vframe;
   GstBuffer *buffer;
-  int mapped;
+  gboolean mapped;
 };
 
 static void

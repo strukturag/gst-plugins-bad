@@ -502,7 +502,10 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
       state->info.fps_n = 24;
       state->info.fps_d = 1;
     }
-    gst_video_decoder_negotiate (decoder);
+    if (!gst_video_decoder_negotiate (decoder)) {
+      GST_ERROR_OBJECT (dec, "Failed to negotiate format");
+      return GST_FLOW_ERROR;
+    }
     if (dec->output_state != NULL) {
       gst_video_codec_state_unref (dec->output_state);
     }

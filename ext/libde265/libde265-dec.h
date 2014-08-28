@@ -37,9 +37,9 @@ G_BEGIN_DECLS
 
 typedef enum
 {
-  GST_TYPE_LIBDE265_DEC_PACKETIZED,
-  GST_TYPE_LIBDE265_DEC_RAW
-} GstLibde265DecMode;
+  GST_TYPE_LIBDE265_FORMAT_PACKETIZED,
+  GST_TYPE_LIBDE265_FORMAT_BYTESTREAM
+} GstLibde265DecFormat;
 
 typedef struct _GstLibde265Dec
 {
@@ -49,7 +49,7 @@ typedef struct _GstLibde265Dec
   de265_decoder_context *ctx;
   int width;
   int height;
-  GstLibde265DecMode mode;
+  GstLibde265DecFormat format;
   int length_size;
   int fps_n;
   int fps_d;

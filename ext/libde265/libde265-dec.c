@@ -27,7 +27,7 @@
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0 filesrc location=bitstream.hevc ! libde265dec mode=raw framerate=25/1 ! autovideosink
+ * gst-launch-1.0 filesrc location=bitstream.hevc ! 'video/x-hevc,stream-format=byte-stream,framerate=25/1' ! libde265dec ! autovideosink
  * ]| The above pipeline decodes the HEVC/H.265 bitstream and renders it to the screen.
  * </refsect2>
  */
@@ -67,37 +67,14 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",
 enum
 {
   PROP_0,
-  PROP_MODE,
-  PROP_FRAMERATE,
   PROP_MAX_THREADS,
   PROP_LAST
 };
 
-#define DEFAULT_MODE        GST_TYPE_LIBDE265_DEC_PACKETIZED
+#define DEFAULT_FORMAT      GST_TYPE_LIBDE265_FORMAT_PACKETIZED
 #define DEFAULT_FPS_N       0
 #define DEFAULT_FPS_D       1
 #define DEFAULT_MAX_THREADS 0
-
-#define GST_TYPE_LIBDE265_DEC_MODE (gst_libde265_dec_mode_get_type ())
-static GType
-gst_libde265_dec_mode_get_type (void)
-{
-  static GType libde265_dec_mode_type = 0;
-  static const GEnumValue libde265_dec_mode_types[] = {
-    {GST_TYPE_LIBDE265_DEC_PACKETIZED,
-        "Packetized H.265 bitstream with packet lengths "
-          "instead of startcodes", "packetized"},
-    {GST_TYPE_LIBDE265_DEC_RAW,
-        "Raw H.265 bitstream including startcodes", "raw"},
-    {0, NULL, NULL}
-  };
-
-  if (!libde265_dec_mode_type) {
-    libde265_dec_mode_type =
-        g_enum_register_static ("GstLibde265DecMode", libde265_dec_mode_types);
-  }
-  return libde265_dec_mode_type;
-}
 
 static void gst_libde265_dec_finalize (GObject * object);
 
@@ -126,16 +103,6 @@ gst_libde265_dec_class_init (GstLibde265DecClass * klass)
   gobject_class->finalize = gst_libde265_dec_finalize;
   gobject_class->set_property = gst_libde265_dec_set_property;
   gobject_class->get_property = gst_libde265_dec_get_property;
-
-  g_object_class_install_property (gobject_class, PROP_MODE,
-      g_param_spec_enum ("mode", "Input mode",
-          "Input mode of data to decode", GST_TYPE_LIBDE265_DEC_MODE,
-          DEFAULT_MODE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  g_object_class_install_property (gobject_class, PROP_FRAMERATE,
-      gst_param_spec_fraction ("framerate", "Frame Rate",
-          "Frame rate of images in raw stream", 0, 1, 100, 1, DEFAULT_FPS_N,
-          DEFAULT_FPS_D, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_MAX_THREADS,
       g_param_spec_int ("max-threads", "Maximum decode threads",
@@ -179,7 +146,7 @@ _gst_libde265_dec_reset_decoder (GstLibde265Dec * dec)
 static void
 gst_libde265_dec_init (GstLibde265Dec * dec)
 {
-  dec->mode = DEFAULT_MODE;
+  dec->format = DEFAULT_FORMAT;
   dec->fps_n = DEFAULT_FPS_N;
   dec->fps_d = DEFAULT_FPS_D;
   dec->max_threads = DEFAULT_MAX_THREADS;
@@ -221,15 +188,6 @@ gst_libde265_dec_set_property (GObject * object, guint prop_id,
   GstLibde265Dec *dec = GST_LIBDE265_DEC (object);
 
   switch (prop_id) {
-    case PROP_MODE:
-      dec->mode = g_value_get_enum (value);
-      GST_DEBUG_OBJECT (dec, "Mode set to %d", dec->mode);
-      break;
-    case PROP_FRAMERATE:
-      dec->fps_n = gst_value_get_fraction_numerator (value);
-      dec->fps_d = gst_value_get_fraction_denominator (value);
-      GST_DEBUG_OBJECT (dec, "Framerate set to %d/%d", dec->fps_n, dec->fps_d);
-      break;
     case PROP_MAX_THREADS:
       dec->max_threads = g_value_get_int (value);
       if (dec->max_threads) {
@@ -250,12 +208,6 @@ gst_libde265_dec_get_property (GObject * object, guint prop_id,
   GstLibde265Dec *dec = GST_LIBDE265_DEC (object);
 
   switch (prop_id) {
-    case PROP_MODE:
-      g_value_set_enum (value, dec->mode);
-      break;
-    case PROP_FRAMERATE:
-      gst_value_set_fraction (value, dec->fps_n, dec->fps_d);
-      break;
     case PROP_MAX_THREADS:
       g_value_set_int (value, dec->max_threads);
       break;
@@ -463,7 +415,8 @@ gst_libde265_dec_flush (GstVideoDecoder * decoder)
 
   de265_reset (dec->ctx);
   dec->buffer_full = 0;
-  if (dec->codec_data != NULL && dec->mode == GST_TYPE_LIBDE265_DEC_RAW) {
+  if (dec->codec_data != NULL
+      && dec->format == GST_TYPE_LIBDE265_FORMAT_BYTESTREAM) {
     int more;
     de265_error err =
         de265_push_data (dec->ctx, dec->codec_data, dec->codec_data_size, 0,
@@ -514,14 +467,6 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
     if (dec->fps_n > 0) {
       state->info.fps_n = dec->fps_n;
       state->info.fps_d = dec->fps_d;
-    } else if (state->info.fps_d == 0
-        || (state->info.fps_n / (float) state->info.fps_d) > 1000) {
-      /* TODO(fancycode): is 24/1 a sane default or can we get it from the container somehow? */
-      GST_WARNING_OBJECT (dec,
-          "Framerate is too high (%d/%d), defaulting to 24/1",
-          state->info.fps_n, state->info.fps_d);
-      state->info.fps_n = 24;
-      state->info.fps_d = 1;
     }
     if (!gst_video_decoder_negotiate (decoder)) {
       GST_ERROR_OBJECT (dec, "Failed to negotiate format");
@@ -579,7 +524,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
       memcpy (dec->codec_data, data, size);
       if (size > 3 && (data[0] || data[1] || data[2] > 1)) {
         /* encoded in "hvcC" format (assume version 0) */
-        dec->mode = GST_TYPE_LIBDE265_DEC_PACKETIZED;
+        dec->format = GST_TYPE_LIBDE265_FORMAT_PACKETIZED;
         if (size > 22) {
           int i;
           int num_param_sets;
@@ -634,7 +579,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
         GST_DEBUG ("Assuming packetized data (%d bytes length)",
             dec->length_size);
       } else {
-        dec->mode = GST_TYPE_LIBDE265_DEC_RAW;
+        dec->format = GST_TYPE_LIBDE265_FORMAT_BYTESTREAM;
         GST_DEBUG_OBJECT (dec, "Assuming non-packetized data");
         err = de265_push_data (dec->ctx, data, size, 0, NULL);
         if (!de265_isOK (err)) {
@@ -671,7 +616,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
     } else if ((value = gst_structure_get_value (str, "stream-format"))) {
       const gchar *str = g_value_get_string (value);
       if (strcmp (str, "byte-stream") == 0) {
-        dec->mode = GST_TYPE_LIBDE265_DEC_RAW;
+        dec->format = GST_TYPE_LIBDE265_FORMAT_BYTESTREAM;
         GST_DEBUG_OBJECT (dec, "Assuming raw byte-stream");
       }
     }
@@ -707,7 +652,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
   end_data = frame_data + size;
 
   if (size > 0) {
-    if (dec->mode == GST_TYPE_LIBDE265_DEC_PACKETIZED) {
+    if (dec->format == GST_TYPE_LIBDE265_FORMAT_PACKETIZED) {
       /* stream contains length fields and NALs */
       uint8_t *start_data = frame_data;
       while (start_data + dec->length_size <= end_data) {
@@ -718,7 +663,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
         }
         if (start_data + dec->length_size + nal_size > end_data) {
           GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
-              ("Overflow in input data, check data mode"), (NULL));
+              ("Overflow in input data, check stream format"), (NULL));
           goto error_input;
         }
         ret =

@@ -34,7 +34,8 @@ G_BEGIN_DECLS
   (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_LIBDE265_DEC,GstLibde265Dec))
 #define GST_LIBDE265_DEC_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_LIBDE265_DEC,GstLibde265DecClass))
-    typedef enum
+
+typedef enum
 {
   GST_TYPE_LIBDE265_DEC_PACKETIZED,
   GST_TYPE_LIBDE265_DEC_RAW
@@ -67,6 +68,8 @@ typedef struct _GstLibde265DecClass
 
 GType gst_libde265_dec_get_type (void);
 
-G_END_DECLS gboolean gst_libde265_dec_plugin_init (GstPlugin * plugin);
+G_END_DECLS
+
+gboolean gst_libde265_dec_plugin_init (GstPlugin * plugin);
 
 #endif // __GST_LIBDE265_DEC_H__

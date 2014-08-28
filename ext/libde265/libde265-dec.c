@@ -45,8 +45,8 @@
 
 #include "libde265-dec.h"
 
-// use two decoder threads if no information about
-// available CPU cores can be retrieved
+/* use two decoder threads if no information about
+ * available CPU cores can be retrieved */
 #define DEFAULT_THREAD_COUNT        2
 
 #define parent_class gst_libde265_dec_parent_class
@@ -280,7 +280,7 @@ gst_libde265_dec_get_buffer (de265_decoder_context * ctx,
 
   frame = gst_video_decoder_get_frame (base, dec->frame_number);
   if (G_UNLIKELY (frame == NULL)) {
-    // should not happen...
+    /* should not happen... */
     GST_WARNING_OBJECT (base, "Couldn't get codec frame !");
     goto fallback;
   }
@@ -289,7 +289,7 @@ gst_libde265_dec_get_buffer (de265_decoder_context * ctx,
     width += spec->alignment - (width % spec->alignment);
   }
   if (width != spec->visible_width || height != spec->visible_height) {
-    // clipping not supported for now
+    /* clipping not supported for now */
     goto fallback;
   }
 
@@ -375,7 +375,7 @@ gst_libde265_dec_release_buffer (de265_decoder_context * ctx,
     return;
   }
   gst_libde265_dec_release_frame_ref (ref);
-  (void) base;                  // unused
+  (void) base;                  /* unused */
 }
 
 static gboolean
@@ -401,12 +401,12 @@ gst_libde265_dec_start (GstVideoDecoder * decoder)
   if (threads <= 0) {
     threads = DEFAULT_THREAD_COUNT;
   }
-  // NOTE: We start more threads than cores for now, as some threads
-  // might get blocked while waiting for dependent data. Having more
-  // threads increases decoding speed by about 10%
+  /* NOTE: We start more threads than cores for now, as some threads
+   * might get blocked while waiting for dependent data. Having more
+   * threads increases decoding speed by about 10% */
   threads *= 2;
   if (threads > 32) {
-    // TODO: this limit should come from the libde265 headers
+    /* TODO: this limit should come from the libde265 headers */
     threads = 32;
   }
   de265_start_worker_threads (dec->ctx, threads);
@@ -416,7 +416,7 @@ gst_libde265_dec_start (GstVideoDecoder * decoder)
   allocation.get_buffer = gst_libde265_dec_get_buffer;
   allocation.release_buffer = gst_libde265_dec_release_buffer;
   de265_set_image_allocation_functions (dec->ctx, &allocation, decoder);
-  // NOTE: we explicitly disable hash checks for now
+  /* NOTE: we explicitly disable hash checks for now */
   de265_set_parameter_bool (dec->ctx, DE265_DECODER_PARAM_BOOL_SEI_CHECK_HASH,
       0);
   return TRUE;
@@ -459,7 +459,7 @@ gst_libde265_dec_flush (GstVideoDecoder * decoder)
 
         case DE265_ERROR_IMAGE_BUFFER_FULL:
         case DE265_ERROR_WAITING_FOR_INPUT_DATA:
-          // not really an error
+          /* not really an error */
           more = 0;
           break;
 
@@ -492,7 +492,7 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
       state->info.fps_d = dec->fps_d;
     } else if (state->info.fps_d == 0
         || (state->info.fps_n / (float) state->info.fps_d) > 1000) {
-      // TODO(fancycode): is 24/1 a sane default or can we get it from the container somehow?
+      /* TODO(fancycode): is 24/1 a sane default or can we get it from the container somehow? */
       GST_WARNING_OBJECT (dec,
           "Framerate is too high (%d/%d), defaulting to 24/1",
           state->info.fps_n, state->info.fps_d);
@@ -554,7 +554,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
       dec->codec_data_size = size;
       memcpy (dec->codec_data, data, size);
       if (size > 3 && (data[0] || data[1] || data[2] > 1)) {
-        // encoded in "hvcC" format (assume version 0)
+        /* encoded in "hvcC" format (assume version 0) */
         dec->mode = GST_TYPE_LIBDE265_DEC_PACKETIZED;
         if (size > 22) {
           int i;
@@ -577,7 +577,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
                       size), (NULL));
               return FALSE;
             }
-            // ignore flags + NAL type (1 byte)
+            /* ignore flags + NAL type (1 byte) */
             nal_count = data[pos + 1] << 8 | data[pos + 2];
             pos += 3;
             for (j = 0; j < nal_count; j++) {
@@ -631,7 +631,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
 
           case DE265_ERROR_IMAGE_BUFFER_FULL:
           case DE265_ERROR_WAITING_FOR_INPUT_DATA:
-            // not really an error
+            /* not really an error */
             more = 0;
             break;
 
@@ -684,7 +684,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
 
   if (size > 0) {
     if (dec->mode == GST_TYPE_LIBDE265_DEC_PACKETIZED) {
-      // stream contains length fields and NALs
+      /* stream contains length fields and NALs */
       uint8_t *start_data = frame_data;
       while (start_data + dec->length_size <= end_data) {
         int nal_size = 0;
@@ -728,7 +728,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
   }
   gst_buffer_unmap (frame->input_buffer, &info);
 
-  // decode as much as possible
+  /* decode as much as possible */
   dec->frame_number = frame->system_frame_number;
   do {
     ret = de265_decode (dec->ctx, &more);
@@ -760,12 +760,12 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
 
   img = de265_get_next_picture (dec->ctx);
   if (img == NULL) {
-    // need more data
+    /* need more data */
     return GST_FLOW_OK;
   }
   ref = (struct GstLibde265FrameRef *) de265_get_image_plane_user_data (img, 0);
   if (ref != NULL) {
-    // decoder is using direct rendering
+    /* decoder is using direct rendering */
     GstVideoCodecFrame *out_frame;
     gst_video_codec_frame_unref (frame);
     out_frame = gst_video_codec_frame_ref (ref->frame);

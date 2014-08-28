@@ -725,7 +725,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
       GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
           ("Error while flushing data: %s (code=%d)",
               de265_get_error_text (ret), ret), (NULL));
-      return GST_FLOW_ERROR;
+      goto error_input;
     }
   }
   gst_buffer_unmap (frame->input_buffer, &info);

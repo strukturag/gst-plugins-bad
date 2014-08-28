@@ -45,10 +45,6 @@
 
 #include "libde265-dec.h"
 
-#if !defined(LIBDE265_NUMERIC_VERSION) || LIBDE265_NUMERIC_VERSION < 0x00080000
-#error "You need libde265 0.8 or newer to compile this plugin."
-#endif
-
 // use two decoder threads if no information about
 // available CPU cores can be retrieved
 #define DEFAULT_THREAD_COUNT        2

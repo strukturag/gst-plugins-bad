@@ -61,7 +61,7 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE ("sink",
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE ("{ I420 }"))
+    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE ("I420"))
     );
 
 enum

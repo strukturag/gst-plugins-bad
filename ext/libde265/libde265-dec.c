@@ -804,9 +804,9 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
 
   dest = info.data;
   for (int plane = 0; plane < 3; plane++) {
-    int stride;
     int width = de265_get_image_width (img, plane);
     int height = de265_get_image_height (img, plane);
+    int stride = width;
     const uint8_t *src = de265_get_image_plane (img, plane, &stride);
     if (stride == width) {
       memcpy (dest, src, height * stride);

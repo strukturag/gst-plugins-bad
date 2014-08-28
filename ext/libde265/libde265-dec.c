@@ -639,7 +639,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
   gsize size;
   struct GstLibde265FrameRef *ref;
   GstFlowReturn result;
-  uint8_t *dest;
+  GstVideoFrame outframe;
 
   GstMapInfo info;
   if (!gst_buffer_map (frame->input_buffer, &info, GST_MAP_READ)) {
@@ -758,29 +758,31 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
     return result;
   }
 
-  if (!gst_buffer_map (frame->output_buffer, &info, GST_MAP_WRITE)) {
+  g_assert (dec->output_state != NULL);
+  if (!gst_video_frame_map (&outframe, &dec->output_state->info,
+          frame->output_buffer, GST_MAP_WRITE)) {
     GST_ERROR_OBJECT (dec, "Failed to map output buffer");
     return GST_FLOW_ERROR;
   }
 
-  dest = info.data;
   for (int plane = 0; plane < 3; plane++) {
     int width = de265_get_image_width (img, plane);
     int height = de265_get_image_height (img, plane);
-    int stride = width;
-    const uint8_t *src = de265_get_image_plane (img, plane, &stride);
-    if (stride == width) {
-      memcpy (dest, src, height * stride);
-      dest += (height * stride);
+    int srcstride = width;
+    int dststride = GST_VIDEO_FRAME_COMP_STRIDE (&outframe, plane);
+    const uint8_t *src = de265_get_image_plane (img, plane, &srcstride);
+    uint8_t *dest = GST_VIDEO_FRAME_COMP_DATA (&outframe, plane);
+    if (srcstride == width && dststride == width) {
+      memcpy (dest, src, height * width);
     } else {
       while (height--) {
         memcpy (dest, src, width);
-        src += stride;
-        dest += width;
+        src += srcstride;
+        dest += dststride;
       }
     }
   }
-  gst_buffer_unmap (frame->output_buffer, &info);
+  gst_video_frame_unmap (&outframe);
   frame->pts = (GstClockTime) de265_get_image_PTS (img);
   return gst_video_decoder_finish_frame (decoder, frame);
 

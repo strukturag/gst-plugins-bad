@@ -214,12 +214,12 @@ gst_libde265_dec_set_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_MODE:
       dec->mode = g_value_get_enum (value);
-      GST_DEBUG ("Mode set to %d", dec->mode);
+      GST_DEBUG_OBJECT (dec, "Mode set to %d", dec->mode);
       break;
     case PROP_FRAMERATE:
       dec->fps_n = gst_value_get_fraction_numerator (value);
       dec->fps_d = gst_value_get_fraction_denominator (value);
-      GST_DEBUG ("Framerate set to %d/%d", dec->fps_n, dec->fps_d);
+      GST_DEBUG_OBJECT (dec, "Framerate set to %d/%d", dec->fps_n, dec->fps_d);
       break;
     default:
       break;
@@ -413,8 +413,8 @@ gst_libde265_dec_start (GstVideoDecoder * decoder)
     threads = 32;
   }
   de265_start_worker_threads (dec->ctx, threads);
-  GST_INFO ("Using libde265 %s with %d worker threads", de265_get_version (),
-      threads);
+  GST_INFO_OBJECT (dec, "Using libde265 %s with %d worker threads",
+      de265_get_version (), threads);
 
   allocation.get_buffer = gst_libde265_dec_get_buffer;
   allocation.release_buffer = gst_libde265_dec_release_buffer;
@@ -496,7 +496,8 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
     } else if (state->info.fps_d == 0
         || (state->info.fps_n / (float) state->info.fps_d) > 1000) {
       // TODO(fancycode): is 24/1 a sane default or can we get it from the container somehow?
-      GST_WARNING ("Framerate is too high (%d/%d), defaulting to 24/1",
+      GST_WARNING_OBJECT (dec,
+          "Framerate is too high (%d/%d), defaulting to 24/1",
           state->info.fps_n, state->info.fps_d);
       state->info.fps_n = 24;
       state->info.fps_d = 1;
@@ -506,7 +507,7 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
       gst_video_codec_state_unref (dec->output_state);
     }
     dec->output_state = state;
-    GST_DEBUG ("Frame dimensions are %d x %d", width, height);
+    GST_DEBUG_OBJECT (dec, "Frame dimensions are %d x %d", width, height);
     dec->width = width;
     dec->height = height;
   }
@@ -610,7 +611,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
             dec->length_size);
       } else {
         dec->mode = GST_TYPE_LIBDE265_DEC_RAW;
-        GST_DEBUG ("Assuming non-packetized data");
+        GST_DEBUG_OBJECT (dec, "Assuming non-packetized data");
         err = de265_push_data (dec->ctx, data, size, 0, NULL);
         if (!de265_isOK (err)) {
           gst_buffer_unmap (buf, &info);
@@ -647,7 +648,7 @@ gst_libde265_dec_set_format (GstVideoDecoder * decoder,
       const gchar *str = g_value_get_string (value);
       if (strcmp (str, "byte-stream") == 0) {
         dec->mode = GST_TYPE_LIBDE265_DEC_RAW;
-        GST_DEBUG ("Assuming raw byte-stream");
+        GST_DEBUG_OBJECT (dec, "Assuming raw byte-stream");
       }
     }
   }

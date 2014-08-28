@@ -285,9 +285,6 @@ gst_libde265_dec_get_buffer (de265_decoder_context * ctx,
     goto fallback;
   }
 
-  GST_VIDEO_CODEC_FRAME_FLAG_UNSET (frame,
-      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
-
   if (width % spec->alignment) {
     width += spec->alignment - (width % spec->alignment);
   }
@@ -685,8 +682,6 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
   size = info.size;
   end_data = frame_data + size;
 
-  GST_VIDEO_CODEC_FRAME_FLAG_SET (frame,
-      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
   if (size > 0) {
     if (dec->mode == GST_TYPE_LIBDE265_DEC_PACKETIZED) {
       // stream contains length fields and NALs
@@ -779,9 +774,6 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
     out_frame->pts = (GstClockTime) de265_get_image_PTS (img);
     return gst_video_decoder_finish_frame (decoder, out_frame);
   }
-
-  GST_VIDEO_CODEC_FRAME_FLAG_UNSET (frame,
-      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
 
   result =
       _gst_libde265_image_available (decoder, de265_get_image_width (img, 0),

@@ -768,10 +768,15 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
   const struct de265_image *img;
   de265_error ret = DE265_OK;
   int more = 0;
-  de265_PTS pts = (de265_PTS) frame->pts;
+  GstClockTime pts;
   gsize size;
-
   GstMapInfo info;
+
+  pts = frame->pts;
+  if (pts == GST_CLOCK_TIME_NONE) {
+    pts = frame->dts;
+  }
+
   if (!gst_buffer_map (frame->input_buffer, &info, GST_MAP_READ)) {
     GST_ERROR_OBJECT (dec, "Failed to map input buffer");
     return GST_FLOW_ERROR;
@@ -798,7 +803,7 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
         }
         ret =
             de265_push_NAL (dec->ctx, start_data + dec->length_size, nal_size,
-            pts, frame);
+            (de265_PTS) pts, frame);
         if (ret != DE265_OK) {
           GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
               ("Error while pushing data: %s (code=%d)",
@@ -808,7 +813,8 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
         start_data += dec->length_size + nal_size;
       }
     } else {
-      ret = de265_push_data (dec->ctx, frame_data, size, pts, frame);
+      ret =
+          de265_push_data (dec->ctx, frame_data, size, (de265_PTS) pts, frame);
       if (ret != DE265_OK) {
         GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
             ("Error while pushing data: %s (code=%d)",

@@ -55,7 +55,9 @@ G_DEFINE_TYPE (GstLibde265Dec, gst_libde265_dec, GST_TYPE_VIDEO_DECODER);
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("video/x-h265")
+    GST_STATIC_CAPS
+    ("video/x-h265, stream-format=(string) { hvc1, hev1, byte-stream }, "
+        "alignment=(string) { au, nal }")
     );
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",

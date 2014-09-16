@@ -142,7 +142,6 @@ _gst_libde265_dec_reset_decoder (GstLibde265Dec * dec)
   dec->buffer_full = 0;
   dec->codec_data = NULL;
   dec->codec_data_size = 0;
-  dec->frame_number = -1;
   dec->input_state = NULL;
   dec->output_state = NULL;
 }
@@ -246,18 +245,26 @@ gst_libde265_dec_get_buffer (de265_decoder_context * ctx,
 {
   GstVideoDecoder *base = (GstVideoDecoder *) userdata;
   GstLibde265Dec *dec = GST_LIBDE265_DEC (base);
-  GstVideoCodecFrame *frame;
+  GstVideoCodecFrame *frame = NULL;
   int i;
   int width = spec->width;
   int height = spec->height;
   GstFlowReturn ret;
   struct GstLibde265FrameRef *ref;
   GstVideoInfo *info;
+  int frame_number;
 
-  frame = gst_video_decoder_get_frame (base, dec->frame_number);
+  frame_number = (uintptr_t) de265_get_image_user_data (img) - 1;
+  if (G_UNLIKELY (frame_number == -1)) {
+    /* should not happen... */
+    GST_WARNING_OBJECT (base, "Frame has no number assigned!");
+    goto fallback;
+  }
+
+  frame = gst_video_decoder_get_frame (base, frame_number);
   if (G_UNLIKELY (frame == NULL)) {
     /* should not happen... */
-    GST_WARNING_OBJECT (base, "Couldn't get codec frame !");
+    GST_WARNING_OBJECT (base, "Couldn't get codec frame!");
     goto fallback;
   }
 
@@ -332,8 +339,12 @@ gst_libde265_dec_get_buffer (de265_decoder_context * ctx,
 
 error:
   gst_libde265_dec_release_frame_ref (ref);
+  frame = NULL;
 
 fallback:
+  if (frame != NULL) {
+    gst_video_codec_frame_unref (frame);
+  }
   return de265_get_default_image_allocation_functions ()->get_buffer (ctx,
       spec, img, userdata);
 }
@@ -686,15 +697,16 @@ _gst_libde265_return_image (GstVideoDecoder * decoder,
   struct GstLibde265FrameRef *ref;
   GstFlowReturn result;
   GstVideoFrame outframe;
+  GstVideoCodecFrame *out_frame;
+  int frame_number;
 
   ref = (struct GstLibde265FrameRef *) de265_get_image_plane_user_data (img, 0);
   if (ref != NULL) {
     /* decoder is using direct rendering */
-    GstVideoCodecFrame *out_frame;
+    out_frame = gst_video_codec_frame_ref (ref->frame);
     if (frame != NULL) {
       gst_video_codec_frame_unref (frame);
     }
-    out_frame = gst_video_codec_frame_ref (ref->frame);
     gst_buffer_replace (&out_frame->output_buffer, ref->buffer);
     gst_buffer_replace (&ref->buffer, NULL);
     out_frame->pts = (GstClockTime) de265_get_image_PTS (img);
@@ -709,21 +721,22 @@ _gst_libde265_return_image (GstVideoDecoder * decoder,
     return result;
   }
 
-  if (frame == NULL) {
-    /* draining remaining pictures with non-direct rendering */
-    frame = de265_get_image_user_data (img);
-    if (frame == NULL) {
-      /* the last frame of raw streams might have lost its "userdata",
-       * needs to be fixed upstream in libde265 and then doesn't take
-       * this code path */
-      frame = gst_video_decoder_get_oldest_frame (decoder);
-      if (frame == NULL) {
-        return GST_FLOW_OK;
-      }
-    }
+  frame_number = (uintptr_t) de265_get_image_user_data (img) - 1;
+  if (frame_number != -1) {
+    out_frame = gst_video_decoder_get_frame (decoder, frame_number);
+  } else {
+    out_frame = NULL;
+  }
+  if (frame != NULL) {
+    gst_video_codec_frame_unref (frame);
   }
 
-  result = gst_video_decoder_allocate_output_frame (decoder, frame);
+  if (out_frame == NULL) {
+    GST_ERROR_OBJECT (dec, "No frame available to return");
+    return GST_FLOW_ERROR;
+  }
+
+  result = gst_video_decoder_allocate_output_frame (decoder, out_frame);
   if (result != GST_FLOW_OK) {
     GST_ERROR_OBJECT (dec, "Failed to allocate output frame");
     return result;
@@ -731,7 +744,7 @@ _gst_libde265_return_image (GstVideoDecoder * decoder,
 
   g_assert (dec->output_state != NULL);
   if (!gst_video_frame_map (&outframe, &dec->output_state->info,
-          frame->output_buffer, GST_MAP_WRITE)) {
+          out_frame->output_buffer, GST_MAP_WRITE)) {
     GST_ERROR_OBJECT (dec, "Failed to map output buffer");
     return GST_FLOW_ERROR;
   }
@@ -754,8 +767,8 @@ _gst_libde265_return_image (GstVideoDecoder * decoder,
     }
   }
   gst_video_frame_unmap (&outframe);
-  frame->pts = (GstClockTime) de265_get_image_PTS (img);
-  return gst_video_decoder_finish_frame (decoder, frame);
+  out_frame->pts = (GstClockTime) de265_get_image_PTS (img);
+  return gst_video_decoder_finish_frame (decoder, out_frame);
 }
 
 static GstFlowReturn
@@ -803,7 +816,8 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
         }
         ret =
             de265_push_NAL (dec->ctx, start_data + dec->length_size, nal_size,
-            (de265_PTS) pts, frame);
+            (de265_PTS) pts,
+            (void *) (uintptr_t) (frame->system_frame_number + 1));
         if (ret != DE265_OK) {
           GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
               ("Error while pushing data: %s (code=%d)",
@@ -814,7 +828,8 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
       }
     } else {
       ret =
-          de265_push_data (dec->ctx, frame_data, size, (de265_PTS) pts, frame);
+          de265_push_data (dec->ctx, frame_data, size, (de265_PTS) pts,
+          (void *) (uintptr_t) (frame->system_frame_number + 1));
       if (ret != DE265_OK) {
         GST_ELEMENT_ERROR (decoder, STREAM, DECODE,
             ("Error while pushing data: %s (code=%d)",
@@ -834,7 +849,6 @@ gst_libde265_dec_handle_frame (GstVideoDecoder * decoder,
   gst_buffer_unmap (frame->input_buffer, &info);
 
   /* decode as much as possible */
-  dec->frame_number = frame->system_frame_number;
   do {
     ret = de265_decode (dec->ctx, &more);
   } while (more && ret == DE265_OK);

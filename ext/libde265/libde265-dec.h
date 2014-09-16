@@ -57,7 +57,6 @@ typedef struct _GstLibde265Dec
   int buffer_full;
   void *codec_data;
   int codec_data_size;
-  int frame_number;
   GstVideoCodecState *input_state;
   GstVideoCodecState *output_state;
 } GstLibde265Dec;

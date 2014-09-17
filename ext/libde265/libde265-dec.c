@@ -74,8 +74,6 @@ enum
 };
 
 #define DEFAULT_FORMAT      GST_TYPE_LIBDE265_FORMAT_PACKETIZED
-#define DEFAULT_FPS_N       0
-#define DEFAULT_FPS_D       1
 #define DEFAULT_MAX_THREADS 0
 
 static void gst_libde265_dec_finalize (GObject * object);
@@ -150,8 +148,6 @@ static void
 gst_libde265_dec_init (GstLibde265Dec * dec)
 {
   dec->format = DEFAULT_FORMAT;
-  dec->fps_n = DEFAULT_FPS_N;
-  dec->fps_d = DEFAULT_FPS_D;
   dec->max_threads = DEFAULT_MAX_THREADS;
   dec->length_size = 4;
   _gst_libde265_dec_reset_decoder (dec);
@@ -529,10 +525,9 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
     GstVideoCodecState *state =
         gst_video_decoder_set_output_state (decoder, GST_VIDEO_FORMAT_I420,
         width, height, dec->input_state);
-    g_assert (state != NULL);
-    if (dec->fps_n > 0) {
-      state->info.fps_n = dec->fps_n;
-      state->info.fps_d = dec->fps_d;
+    if (state == NULL) {
+      GST_ERROR_OBJECT (dec, "Failed to set output state");
+      return GST_FLOW_ERROR;
     }
     if (!gst_video_decoder_negotiate (decoder)) {
       GST_ERROR_OBJECT (dec, "Failed to negotiate format");

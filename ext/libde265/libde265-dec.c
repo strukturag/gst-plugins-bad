@@ -711,7 +711,6 @@ _gst_libde265_return_image (GstVideoDecoder * decoder,
     }
     gst_buffer_replace (&out_frame->output_buffer, ref->buffer);
     gst_buffer_replace (&ref->buffer, NULL);
-    out_frame->pts = (GstClockTime) de265_get_image_PTS (img);
     return gst_video_decoder_finish_frame (decoder, out_frame);
   }
 
@@ -769,7 +768,6 @@ _gst_libde265_return_image (GstVideoDecoder * decoder,
     }
   }
   gst_video_frame_unmap (&outframe);
-  out_frame->pts = (GstClockTime) de265_get_image_PTS (img);
   return gst_video_decoder_finish_frame (decoder, out_frame);
 }
 

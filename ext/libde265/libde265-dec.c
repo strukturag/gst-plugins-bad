@@ -139,8 +139,6 @@ static inline void
 _gst_libde265_dec_reset_decoder (GstLibde265Dec * dec)
 {
   dec->ctx = NULL;
-  dec->width = -1;
-  dec->height = -1;
   dec->buffer_full = 0;
   dec->codec_data = NULL;
   dec->codec_data_size = 0;
@@ -525,7 +523,9 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
 {
   GstLibde265Dec *dec = GST_LIBDE265_DEC (decoder);
 
-  if (G_UNLIKELY (width != dec->width || height != dec->height)) {
+  if (G_UNLIKELY (dec->output_state == NULL
+          || width != dec->output_state->info.width
+          || height != dec->output_state->info.height)) {
     GstVideoCodecState *state =
         gst_video_decoder_set_output_state (decoder, GST_VIDEO_FORMAT_I420,
         width, height, dec->input_state);
@@ -543,8 +543,6 @@ _gst_libde265_image_available (GstVideoDecoder * decoder, int width, int height)
     }
     dec->output_state = state;
     GST_DEBUG_OBJECT (dec, "Frame dimensions are %d x %d", width, height);
-    dec->width = width;
-    dec->height = height;
   }
 
   return GST_FLOW_OK;

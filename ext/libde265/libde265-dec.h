@@ -47,8 +47,6 @@ typedef struct _GstLibde265Dec
 
   /* private */
   de265_decoder_context *ctx;
-  int width;
-  int height;
   GstLibde265DecFormat format;
   int length_size;
   int fps_n;
